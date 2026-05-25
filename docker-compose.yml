@@ -1,0 +1,31 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        VITE_SUBMISSIONS_ENDPOINT: /api/submissions
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgres://hubchallenge:hubchallenge@postgres:5432/hubchallenge
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: hubchallenge
+      POSTGRES_USER: hubchallenge
+      POSTGRES_PASSWORD: hubchallenge
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hubchallenge -d hubchallenge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
