@@ -75,7 +75,8 @@ export async function saveSubmission(payload: Record<string, unknown>) {
       syncError: error instanceof Error ? error.message : "Erro ao sincronizar",
     };
     saveStoredSubmissions(getStoredSubmissions().map((item) => (item.id === record.id ? updatedRecord : item)));
-    return updatedRecord;
+
+    throw new Error("Não foi possível salvar sua confirmação no banco de dados. Tente novamente em alguns instantes.");
   }
 }
 

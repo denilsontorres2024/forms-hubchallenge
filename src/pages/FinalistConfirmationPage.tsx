@@ -102,6 +102,7 @@ const defaultValues: FinalistFormValues = {
 export function FinalistConfirmationPage() {
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [submitError, setSubmitError] = useState("");
   const {
     control,
     register,
@@ -142,6 +143,7 @@ export function FinalistConfirmationPage() {
 
   async function onSubmit(data: FinalistFormValues) {
     setLoading(true);
+    setSubmitError("");
     const payload = {
       formType: "finalist_confirmation",
       teamNumber: data.teamNumber || "",
@@ -157,10 +159,15 @@ export function FinalistConfirmationPage() {
       status: "confirmed",
     };
 
-    await saveSubmission(payload);
-    await new Promise((resolve) => window.setTimeout(resolve, 450));
-    setLoading(false);
-    setSubmitted(true);
+    try {
+      await saveSubmission(payload);
+      await new Promise((resolve) => window.setTimeout(resolve, 450));
+      setSubmitted(true);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "Não foi possível salvar sua confirmação. Tente novamente.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   if (submitted) {
@@ -444,11 +451,14 @@ export function FinalistConfirmationPage() {
         </FormSection>
 
         <FormSection eyebrow="Confirmação" title="Confirmação" description="Ao enviar, sua participação será registrada para validação da organização.">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-4">
+            {submitError ? <Alert tone="error">{submitError}</Alert> : null}
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm leading-6 text-hub-muted">Você poderá receber atualizações pelo WhatsApp e e-mail informados neste formulário.</p>
             <PrimaryButton type="submit" loading={loading}>
               Confirmar participação
             </PrimaryButton>
+            </div>
           </div>
         </FormSection>
       </form>

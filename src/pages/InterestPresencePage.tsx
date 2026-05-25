@@ -79,6 +79,7 @@ const defaultValues: InterestFormValues = {
 export function InterestPresencePage() {
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [submitError, setSubmitError] = useState("");
   const {
     control,
     register,
@@ -131,6 +132,7 @@ export function InterestPresencePage() {
 
   async function onSubmit(data: InterestFormValues) {
     setLoading(true);
+    setSubmitError("");
     const payload = {
       formType: "interest_request",
       fullName: data.fullName,
@@ -145,10 +147,15 @@ export function InterestPresencePage() {
       status: "interest_pending",
     };
 
-    await saveSubmission(payload);
-    await new Promise((resolve) => window.setTimeout(resolve, 450));
-    setLoading(false);
-    setSubmitted(true);
+    try {
+      await saveSubmission(payload);
+      await new Promise((resolve) => window.setTimeout(resolve, 450));
+      setSubmitted(true);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "Não foi possível salvar seu interesse. Tente novamente.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   if (submitted) {
@@ -370,11 +377,14 @@ export function InterestPresencePage() {
         </FormSection>
 
         <FormSection eyebrow="Confirmação" title="Confirmação" description="O envio registra seu interesse para análise da organização.">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-sm leading-6 text-hub-muted">A confirmação, se houver vaga disponível, será enviada pelos canais informados.</p>
-            <PrimaryButton type="submit" loading={loading}>
-              Enviar interesse
-            </PrimaryButton>
+          <div className="space-y-4">
+            {submitError ? <Alert tone="error">{submitError}</Alert> : null}
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm leading-6 text-hub-muted">A confirmação, se houver vaga disponível, será enviada pelos canais informados.</p>
+              <PrimaryButton type="submit" loading={loading}>
+                Enviar interesse
+              </PrimaryButton>
+            </div>
           </div>
         </FormSection>
       </form>
