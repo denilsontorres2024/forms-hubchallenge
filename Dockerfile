@@ -24,6 +24,6 @@ RUN npm ci --omit=dev
 COPY server ./server
 COPY --from=build /app/dist ./dist
 
-EXPOSE 80
+EXPOSE 80 3000 8080
 
 CMD ["node", "server/index.mjs"]

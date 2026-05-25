@@ -93,4 +93,4 @@ DATABASE_SSL=true
 
 O container serve o frontend e a API no mesmo domínio. Os formulários enviam para `/api/submissions` e a rota `/submissoes` lista os registros do banco.
 
-No Easypanel, se a tela de domínio mostrar "Service is not reachable", confira se a porta pública/interna do app está apontando para a mesma porta do container. Este Dockerfile usa `PORT=80` por padrão. Se você mantiver `PORT=3000` nas variáveis, configure também a porta do serviço/domínio no Easypanel como `3000`.
+No Easypanel, se a tela de domínio mostrar "Service is not reachable", confira se a porta pública/interna do app está apontando para uma porta exposta pelo container. Em produção, o servidor tenta escutar em `PORT`, `80`, `3000` e `8080` para evitar conflito de proxy.

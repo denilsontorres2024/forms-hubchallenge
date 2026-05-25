@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = Number(process.env.PORT || 3000);
+const fallbackPorts = process.env.NODE_ENV === "production" ? [80, 3000, 8080] : [];
 const readEnv = (...names) => {
   for (const name of names) {
     const value = process.env[name]?.trim();
@@ -312,8 +313,16 @@ app.get(/.*/, (_request, response) => {
 
 ensureDatabase()
   .then(() => {
-    app.listen(port, "0.0.0.0", () => {
-      console.log(`HUB Challenge app running on port ${port}`);
+    const ports = [...new Set([port, ...fallbackPorts].filter(Boolean))];
+
+    ports.forEach((currentPort) => {
+      const server = app.listen(currentPort, "0.0.0.0", () => {
+        console.log(`HUB Challenge app running on port ${currentPort}`);
+      });
+
+      server.on("error", (error) => {
+        console.warn(`Could not listen on port ${currentPort}: ${error.message}`);
+      });
     });
   })
   .catch((error) => {
