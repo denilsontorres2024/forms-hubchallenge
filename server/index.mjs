@@ -7,9 +7,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const databaseUrl = process.env.DATABASE_URL;
+const supabaseRestUrl = process.env.SUPABASE_REST_URL?.replace(/\/$/, "");
+const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY;
+const supabaseSubmissionsTable = process.env.SUPABASE_SUBMISSIONS_TABLE || "submissions";
+const storageProvider = supabaseRestUrl && supabaseSecretKey ? "supabase" : databaseUrl ? "postgres" : "none";
 
-if (!databaseUrl) {
-  console.warn("DATABASE_URL is not set. API requests will fail until a database is configured.");
+if (storageProvider === "none") {
+  console.warn("No database configured. Set Supabase variables or DATABASE_URL.");
 }
 
 const pool = databaseUrl
@@ -22,7 +26,7 @@ const pool = databaseUrl
 app.use(express.json({ limit: "1mb" }));
 
 async function ensureDatabase() {
-  if (!pool) return;
+  if (storageProvider !== "postgres" || !pool) return;
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS submissions (
@@ -84,49 +88,87 @@ function rowToSubmission(row) {
   };
 }
 
-app.get("/api/health", async (_request, response) => {
-  try {
-    if (pool) {
-      await pool.query("SELECT 1");
-    }
+function submissionToDbRow(submission) {
+  return {
+    id: submission.id,
+    submitted_at: submission.submittedAt,
+    form_type: submission.payload.formType,
+    full_name: submission.payload.fullName || null,
+    team_number: submission.payload.teamNumber || null,
+    whatsapp: submission.payload.whatsapp || null,
+    email: submission.payload.email || null,
+    status: submission.payload.status || null,
+    payload: submission.payload,
+  };
+}
 
-    response.json({
-      ok: true,
-      database: Boolean(pool),
+function supabaseHeaders(extraHeaders = {}) {
+  return {
+    apikey: supabaseSecretKey,
+    Authorization: `Bearer ${supabaseSecretKey}`,
+    "Content-Type": "application/json",
+    ...extraHeaders,
+  };
+}
+
+function supabaseTableUrl(query = "") {
+  return `${supabaseRestUrl}/${supabaseSubmissionsTable}${query}`;
+}
+
+async function handleSupabaseResponse(response) {
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : null;
+
+  if (!response.ok) {
+    const error = new Error(data?.message || data?.error || `Supabase HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+
+  return data;
+}
+
+async function listSubmissions() {
+  if (storageProvider === "supabase") {
+    const response = await fetch(supabaseTableUrl("?select=id,submitted_at,payload&order=submitted_at.desc&limit=1000"), {
+      headers: supabaseHeaders(),
     });
-  } catch (error) {
-    response.status(500).json({
-      ok: false,
-      error: error instanceof Error ? error.message : "Erro desconhecido",
+    const rows = await handleSupabaseResponse(response);
+    return rows.map(rowToSubmission);
+  }
+
+  if (storageProvider === "postgres" && pool) {
+    const result = await pool.query(`
+      SELECT id, submitted_at, payload
+      FROM submissions
+      ORDER BY submitted_at DESC
+      LIMIT 1000;
+    `);
+
+    return result.rows.map(rowToSubmission);
+  }
+
+  const error = new Error("Banco de dados não configurado.");
+  error.status = 503;
+  throw error;
+}
+
+async function upsertSubmission(submission) {
+  const row = submissionToDbRow(submission);
+
+  if (storageProvider === "supabase") {
+    const response = await fetch(supabaseTableUrl("?on_conflict=id"), {
+      method: "POST",
+      headers: supabaseHeaders({
+        Prefer: "resolution=merge-duplicates,return=representation",
+      }),
+      body: JSON.stringify(row),
     });
-  }
-});
-
-app.get("/api/submissions", async (_request, response) => {
-  if (!pool) {
-    response.status(503).json({ error: "DATABASE_URL não configurado." });
-    return;
+    const rows = await handleSupabaseResponse(response);
+    return rowToSubmission(rows[0]);
   }
 
-  const result = await pool.query(`
-    SELECT id, submitted_at, payload
-    FROM submissions
-    ORDER BY submitted_at DESC
-    LIMIT 1000;
-  `);
-
-  response.json(result.rows.map(rowToSubmission));
-});
-
-app.post("/api/submissions", async (request, response) => {
-  if (!pool) {
-    response.status(503).json({ error: "DATABASE_URL não configurado." });
-    return;
-  }
-
-  try {
-    const submission = normalizeSubmission(request.body);
-
+  if (storageProvider === "postgres" && pool) {
     const result = await pool.query(
       `
         INSERT INTO submissions (
@@ -152,20 +194,77 @@ app.post("/api/submissions", async (request, response) => {
           payload = EXCLUDED.payload
         RETURNING id, submitted_at, payload;
       `,
-      [
-        submission.id,
-        submission.submittedAt,
-        submission.payload.formType,
-        submission.payload.fullName || null,
-        submission.payload.teamNumber || null,
-        submission.payload.whatsapp || null,
-        submission.payload.email || null,
-        submission.payload.status || null,
-        submission.payload,
-      ],
+      [row.id, row.submitted_at, row.form_type, row.full_name, row.team_number, row.whatsapp, row.email, row.status, row.payload],
     );
 
-    response.status(201).json(rowToSubmission(result.rows[0]));
+    return rowToSubmission(result.rows[0]);
+  }
+
+  const error = new Error("Banco de dados não configurado.");
+  error.status = 503;
+  throw error;
+}
+
+async function deleteSubmissions() {
+  if (storageProvider === "supabase") {
+    const response = await fetch(supabaseTableUrl("?id=not.is.null"), {
+      method: "DELETE",
+      headers: supabaseHeaders(),
+    });
+    await handleSupabaseResponse(response);
+    return;
+  }
+
+  if (storageProvider === "postgres" && pool) {
+    await pool.query("DELETE FROM submissions;");
+    return;
+  }
+
+  const error = new Error("Banco de dados não configurado.");
+  error.status = 503;
+  throw error;
+}
+
+app.get("/api/health", async (_request, response) => {
+  try {
+    if (storageProvider === "supabase") {
+      const healthResponse = await fetch(supabaseTableUrl("?select=id&limit=1"), {
+        headers: supabaseHeaders(),
+      });
+      await handleSupabaseResponse(healthResponse);
+    }
+
+    if (storageProvider === "postgres" && pool) {
+      await pool.query("SELECT 1");
+    }
+
+    response.json({
+      ok: true,
+      database: storageProvider !== "none",
+      provider: storageProvider,
+    });
+  } catch (error) {
+    response.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Erro desconhecido",
+    });
+  }
+});
+
+app.get("/api/submissions", async (_request, response) => {
+  try {
+    response.json(await listSubmissions());
+  } catch (error) {
+    response.status(error.status || 500).json({
+      error: error instanceof Error ? error.message : "Erro ao listar submissões.",
+    });
+  }
+});
+
+app.post("/api/submissions", async (request, response) => {
+  try {
+    const submission = normalizeSubmission(request.body);
+    response.status(201).json(await upsertSubmission(submission));
   } catch (error) {
     response.status(error.status || 500).json({
       error: error instanceof Error ? error.message : "Erro ao salvar submissão.",
@@ -174,13 +273,14 @@ app.post("/api/submissions", async (request, response) => {
 });
 
 app.delete("/api/submissions", async (_request, response) => {
-  if (!pool) {
-    response.status(503).json({ error: "DATABASE_URL não configurado." });
-    return;
+  try {
+    await deleteSubmissions();
+    response.status(204).send();
+  } catch (error) {
+    response.status(error.status || 500).json({
+      error: error instanceof Error ? error.message : "Erro ao limpar submissões.",
+    });
   }
-
-  await pool.query("DELETE FROM submissions;");
-  response.status(204).send();
 });
 
 app.use(express.static(path.resolve(__dirname, "../dist")));
