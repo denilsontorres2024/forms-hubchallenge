@@ -1,4 +1,5 @@
 import { FinalistConfirmationPage } from "./pages/FinalistConfirmationPage";
+import { HomePage } from "./pages/HomePage";
 import { InterestPresencePage } from "./pages/InterestPresencePage";
 
 export function App() {
@@ -12,5 +13,5 @@ export function App() {
     return <InterestPresencePage />;
   }
 
-  return <FinalistConfirmationPage />;
+  return <HomePage />;
 }
