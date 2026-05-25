@@ -25,6 +25,8 @@ SUPABASE_SUBMISSIONS_TABLE=submissions
 SUPABASE_SECRET_KEY=your-server-only-secret-key
 ```
 
+Também são aceitos os aliases `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY`.
+
 Postgres local opcional:
 
 ```env

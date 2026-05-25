@@ -6,15 +6,36 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = Number(process.env.PORT || 3000);
-const databaseUrl = process.env.DATABASE_URL;
-const supabaseRestUrl = process.env.SUPABASE_REST_URL?.replace(/\/$/, "");
-const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY;
-const supabaseSubmissionsTable = process.env.SUPABASE_SUBMISSIONS_TABLE || "submissions";
+const readEnv = (...names) => {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+
+  return "";
+};
+
+const normalizeSupabaseRestUrl = (url) => {
+  if (!url) return "";
+  const normalized = url.replace(/\/$/, "");
+  return normalized.endsWith("/rest/v1") ? normalized : `${normalized}/rest/v1`;
+};
+
+const databaseUrl = readEnv("DATABASE_URL");
+const supabaseRestUrl = normalizeSupabaseRestUrl(readEnv("SUPABASE_REST_URL", "SUPABASE_URL"));
+const supabaseSecretKey = readEnv("SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_ANON_KEY");
+const supabaseSubmissionsTable = readEnv("SUPABASE_SUBMISSIONS_TABLE") || "submissions";
 const storageProvider = supabaseRestUrl && supabaseSecretKey ? "supabase" : databaseUrl ? "postgres" : "none";
 
 if (storageProvider === "none") {
   console.warn("No database configured. Set Supabase variables or DATABASE_URL.");
 }
+
+console.log(
+  `Storage provider: ${storageProvider}; Supabase URL: ${supabaseRestUrl ? "configured" : "missing"}; Supabase key: ${
+    supabaseSecretKey ? "configured" : "missing"
+  }; table: ${supabaseSubmissionsTable}`,
+);
 
 const pool = databaseUrl
   ? new Pool({
