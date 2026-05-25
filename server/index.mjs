@@ -26,6 +26,7 @@ const databaseUrl = readEnv("DATABASE_URL");
 const supabaseRestUrl = normalizeSupabaseRestUrl(readEnv("SUPABASE_REST_URL", "SUPABASE_URL"));
 const supabaseSecretKey = readEnv("SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_ANON_KEY");
 const supabaseSubmissionsTable = readEnv("SUPABASE_SUBMISSIONS_TABLE") || "submissions";
+const supabaseGuestsTable = readEnv("SUPABASE_GUESTS_TABLE") || "guests";
 const storageProvider = supabaseRestUrl && supabaseSecretKey ? "supabase" : databaseUrl ? "postgres" : "none";
 
 if (storageProvider === "none") {
@@ -35,7 +36,7 @@ if (storageProvider === "none") {
 console.log(
   `Storage provider: ${storageProvider}; Supabase URL: ${supabaseRestUrl ? "configured" : "missing"}; Supabase key: ${
     supabaseSecretKey ? "configured" : "missing"
-  }; table: ${supabaseSubmissionsTable}`,
+  }; submissions table: ${supabaseSubmissionsTable}; guests table: ${supabaseGuestsTable}`,
 );
 
 const pool = databaseUrl
@@ -72,6 +73,31 @@ async function ensureDatabase() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_submissions_form_type
     ON submissions (form_type);
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS guests (
+      id TEXT PRIMARY KEY,
+      submission_id TEXT NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      form_type TEXT NOT NULL,
+      guest_type TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      full_name TEXT NOT NULL,
+      cpf TEXT,
+      whatsapp TEXT,
+      payload JSONB NOT NULL
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_guests_submission_id
+    ON guests (submission_id);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_guests_guest_type
+    ON guests (guest_type);
   `);
 }
 
@@ -124,6 +150,53 @@ function submissionToDbRow(submission) {
   };
 }
 
+function sanitizeGuestName(guest) {
+  return typeof guest?.fullName === "string" ? guest.fullName.trim() : "";
+}
+
+function guestToDbRow(submission, guest, guestType, position) {
+  return {
+    id: `${submission.id}-${guestType}-${position}`,
+    submission_id: submission.id,
+    form_type: submission.payload.formType,
+    guest_type: guestType,
+    position,
+    full_name: sanitizeGuestName(guest),
+    cpf: typeof guest?.cpf === "string" && guest.cpf.trim() ? guest.cpf.trim() : null,
+    whatsapp: typeof guest?.whatsapp === "string" && guest.whatsapp.trim() ? guest.whatsapp.trim() : null,
+    payload: guest,
+  };
+}
+
+function extractGuests(submission) {
+  const rows = [];
+  const payload = submission.payload;
+
+  if (payload.formType === "finalist_confirmation") {
+    if (payload.guest && sanitizeGuestName(payload.guest)) {
+      rows.push(guestToDbRow(submission, payload.guest, "guaranteed", 1));
+    }
+
+    if (Array.isArray(payload.extraGuests)) {
+      payload.extraGuests.forEach((guest, index) => {
+        if (sanitizeGuestName(guest)) {
+          rows.push(guestToDbRow(submission, guest, "extra", index + 1));
+        }
+      });
+    }
+  }
+
+  if (payload.formType === "interest_request" && Array.isArray(payload.guests)) {
+    payload.guests.forEach((guest, index) => {
+      if (sanitizeGuestName(guest)) {
+        rows.push(guestToDbRow(submission, guest, "requested", index + 1));
+      }
+    });
+  }
+
+  return rows;
+}
+
 function supabaseHeaders(extraHeaders = {}) {
   return {
     apikey: supabaseSecretKey,
@@ -133,8 +206,8 @@ function supabaseHeaders(extraHeaders = {}) {
   };
 }
 
-function supabaseTableUrl(query = "") {
-  return `${supabaseRestUrl}/${supabaseSubmissionsTable}${query}`;
+function supabaseTableUrl(table, query = "") {
+  return `${supabaseRestUrl}/${table}${query}`;
 }
 
 async function handleSupabaseResponse(response) {
@@ -152,7 +225,7 @@ async function handleSupabaseResponse(response) {
 
 async function listSubmissions() {
   if (storageProvider === "supabase") {
-    const response = await fetch(supabaseTableUrl("?select=id,submitted_at,payload&order=submitted_at.desc&limit=1000"), {
+    const response = await fetch(supabaseTableUrl(supabaseSubmissionsTable, "?select=id,submitted_at,payload&order=submitted_at.desc&limit=1000"), {
       headers: supabaseHeaders(),
     });
     const rows = await handleSupabaseResponse(response);
@@ -177,9 +250,10 @@ async function listSubmissions() {
 
 async function upsertSubmission(submission) {
   const row = submissionToDbRow(submission);
+  const guestRows = extractGuests(submission);
 
   if (storageProvider === "supabase") {
-    const response = await fetch(supabaseTableUrl("?on_conflict=id"), {
+    const response = await fetch(supabaseTableUrl(supabaseSubmissionsTable, "?on_conflict=id"), {
       method: "POST",
       headers: supabaseHeaders({
         Prefer: "resolution=merge-duplicates,return=representation",
@@ -187,39 +261,100 @@ async function upsertSubmission(submission) {
       body: JSON.stringify(row),
     });
     const rows = await handleSupabaseResponse(response);
-    return rowToSubmission(rows[0]);
+
+    const deleteGuestsResponse = await fetch(supabaseTableUrl(supabaseGuestsTable, `?submission_id=eq.${encodeURIComponent(submission.id)}`), {
+      method: "DELETE",
+      headers: supabaseHeaders(),
+    });
+    await handleSupabaseResponse(deleteGuestsResponse);
+
+    if (guestRows.length > 0) {
+      const guestsResponse = await fetch(supabaseTableUrl(supabaseGuestsTable), {
+        method: "POST",
+        headers: supabaseHeaders({
+          Prefer: "return=minimal",
+        }),
+        body: JSON.stringify(guestRows),
+      });
+      await handleSupabaseResponse(guestsResponse);
+    }
+
+    return { ...rowToSubmission(rows[0]), guestsCount: guestRows.length };
   }
 
   if (storageProvider === "postgres" && pool) {
-    const result = await pool.query(
-      `
-        INSERT INTO submissions (
-          id,
-          submitted_at,
-          form_type,
-          full_name,
-          team_number,
-          whatsapp,
-          email,
-          status,
-          payload
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ON CONFLICT (id) DO UPDATE SET
-          submitted_at = EXCLUDED.submitted_at,
-          form_type = EXCLUDED.form_type,
-          full_name = EXCLUDED.full_name,
-          team_number = EXCLUDED.team_number,
-          whatsapp = EXCLUDED.whatsapp,
-          email = EXCLUDED.email,
-          status = EXCLUDED.status,
-          payload = EXCLUDED.payload
-        RETURNING id, submitted_at, payload;
-      `,
-      [row.id, row.submitted_at, row.form_type, row.full_name, row.team_number, row.whatsapp, row.email, row.status, row.payload],
-    );
+    const client = await pool.connect();
 
-    return rowToSubmission(result.rows[0]);
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        `
+          INSERT INTO submissions (
+            id,
+            submitted_at,
+            form_type,
+            full_name,
+            team_number,
+            whatsapp,
+            email,
+            status,
+            payload
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          ON CONFLICT (id) DO UPDATE SET
+            submitted_at = EXCLUDED.submitted_at,
+            form_type = EXCLUDED.form_type,
+            full_name = EXCLUDED.full_name,
+            team_number = EXCLUDED.team_number,
+            whatsapp = EXCLUDED.whatsapp,
+            email = EXCLUDED.email,
+            status = EXCLUDED.status,
+            payload = EXCLUDED.payload
+          RETURNING id, submitted_at, payload;
+        `,
+        [row.id, row.submitted_at, row.form_type, row.full_name, row.team_number, row.whatsapp, row.email, row.status, row.payload],
+      );
+
+      await client.query("DELETE FROM guests WHERE submission_id = $1", [submission.id]);
+
+      for (const guestRow of guestRows) {
+        await client.query(
+          `
+            INSERT INTO guests (
+              id,
+              submission_id,
+              form_type,
+              guest_type,
+              position,
+              full_name,
+              cpf,
+              whatsapp,
+              payload
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
+          `,
+          [
+            guestRow.id,
+            guestRow.submission_id,
+            guestRow.form_type,
+            guestRow.guest_type,
+            guestRow.position,
+            guestRow.full_name,
+            guestRow.cpf,
+            guestRow.whatsapp,
+            guestRow.payload,
+          ],
+        );
+      }
+
+      await client.query("COMMIT");
+      return { ...rowToSubmission(result.rows[0]), guestsCount: guestRows.length };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   const error = new Error("Banco de dados não configurado.");
@@ -229,7 +364,13 @@ async function upsertSubmission(submission) {
 
 async function deleteSubmissions() {
   if (storageProvider === "supabase") {
-    const response = await fetch(supabaseTableUrl("?id=not.is.null"), {
+    const deleteGuestsResponse = await fetch(supabaseTableUrl(supabaseGuestsTable, "?id=not.is.null"), {
+      method: "DELETE",
+      headers: supabaseHeaders(),
+    });
+    await handleSupabaseResponse(deleteGuestsResponse);
+
+    const response = await fetch(supabaseTableUrl(supabaseSubmissionsTable, "?id=not.is.null"), {
       method: "DELETE",
       headers: supabaseHeaders(),
     });
@@ -250,7 +391,7 @@ async function deleteSubmissions() {
 app.get("/api/health", async (_request, response) => {
   try {
     if (storageProvider === "supabase") {
-      const healthResponse = await fetch(supabaseTableUrl("?select=id&limit=1"), {
+      const healthResponse = await fetch(supabaseTableUrl(supabaseSubmissionsTable, "?select=id&limit=1"), {
         headers: supabaseHeaders(),
       });
       await handleSupabaseResponse(healthResponse);

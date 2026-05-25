@@ -37,25 +37,6 @@ export function getSubmissionsEndpoint() {
   return import.meta.env.VITE_SUBMISSIONS_ENDPOINT || "";
 }
 
-export function isRemoteSubmissionsEnabled() {
-  return Boolean(getSubmissionsEndpoint());
-}
-
-export async function loadSubmissions() {
-  const endpoint = getSubmissionsEndpoint();
-  if (!endpoint) {
-    return getStoredSubmissions();
-  }
-
-  const response = await fetch(endpoint);
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-
-  const data = await response.json();
-  return Array.isArray(data) ? (data as StoredSubmission[]) : [];
-}
-
 export async function saveSubmission(payload: Record<string, unknown>) {
   const record: StoredSubmission = {
     id: createId(),
@@ -100,19 +81,4 @@ export async function saveSubmission(payload: Record<string, unknown>) {
 
 export function clearStoredSubmissions() {
   saveStoredSubmissions([]);
-}
-
-export async function clearSubmissions() {
-  const endpoint = getSubmissionsEndpoint();
-  if (!endpoint) {
-    clearStoredSubmissions();
-    return;
-  }
-
-  const response = await fetch(endpoint, { method: "DELETE" });
-  if (!response.ok && response.status !== 204) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-
-  clearStoredSubmissions();
 }
